@@ -77,54 +77,45 @@ fi
 
 ctx="${C_GRAY}💬 ${C_ACCENT}${pct_prefix}${pct}%${C_GRAY} of ${max_k}k tokens"
 
-# Fetch 5-hour plan usage (cached for 60s)
-CACHE_FILE="/tmp/claude-usage-cache.json"
-CACHE_TTL=60
+# Source usage fetching functions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/fetch-usage.sh"
+
+# ============================================================================
+# Display Usage Segment
+# ============================================================================
+
 usage_segment=""
+usage_data=$(fetch_usage_data)
 
-fetch_usage=0
-if [[ -f "$CACHE_FILE" ]]; then
-    cache_age=$(( $(date +%s) - $(stat -f %m "$CACHE_FILE") ))
-    [[ $cache_age -gt $CACHE_TTL ]] && fetch_usage=1
-else
-    fetch_usage=1
-fi
+if [[ -n "$usage_data" ]]; then
+    error=$(echo "$usage_data" | jq -r '.error // empty' 2>/dev/null)
 
-if [[ $fetch_usage -eq 1 ]]; then
-    token=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
-        | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-    if [[ -z "$token" && -f "$HOME/.claude/.credentials.json" ]]; then
-        token=$(jq -r '.claudeAiOauth.accessToken // empty' "$HOME/.claude/.credentials.json" 2>/dev/null)
-    fi
-    if [[ -n "$token" ]]; then
-        curl -s --max-time 5 "https://api.anthropic.com/api/oauth/usage" \
-            -H "Authorization: Bearer $token" \
-            -H "anthropic-beta: oauth-2025-04-20" \
-            -o "$CACHE_FILE" 2>/dev/null || rm -f "$CACHE_FILE"
-    fi
-fi
+    if [[ -z "$error" ]]; then
+        utilization=$(echo "$usage_data" | jq -r '.sessionUsage // empty' 2>/dev/null)
+        resets_at=$(echo "$usage_data" | jq -r '.sessionResetAt // empty' 2>/dev/null)
 
-if [[ -f "$CACHE_FILE" ]]; then
-    utilization=$(jq -r '.five_hour.utilization // empty' "$CACHE_FILE" 2>/dev/null)
-    resets_at=$(jq -r '.five_hour.resets_at // empty' "$CACHE_FILE" 2>/dev/null)
+        if [[ -n "$utilization" && -n "$resets_at" ]]; then
+            # API returns utilization as percentage already (e.g., 61)
+            utilization_pct=$(echo "$utilization" | awk '{printf "%.0f", $1}')
 
-    if [[ -n "$utilization" && -n "$resets_at" ]]; then
-        now=$(date +%s)
-        reset_epoch=$(python3 -c \
-            "from datetime import datetime; print(int(datetime.fromisoformat('${resets_at}'.replace('Z','+00:00')).timestamp()))" \
-            2>/dev/null)
-        if [[ -n "$reset_epoch" ]]; then
-            diff=$(( reset_epoch - now ))
-            if [[ $diff -le 0 ]]; then
-                reset_str="resetting"
-            elif [[ $diff -lt 3600 ]]; then
-                reset_str="$(( diff / 60 ))m"
+            now=$(date +%s)
+            reset_epoch=$(python3 -c \
+                "from datetime import datetime; print(int(datetime.fromisoformat('${resets_at}'.replace('Z','+00:00')).timestamp()))" \
+                2>/dev/null)
+            if [[ -n "$reset_epoch" ]]; then
+                diff=$(( reset_epoch - now ))
+                if [[ $diff -le 0 ]]; then
+                    reset_str="resetting"
+                elif [[ $diff -lt 3600 ]]; then
+                    reset_str="$(( diff / 60 ))m"
+                else
+                    reset_str="$(( diff / 3600 ))h $(( (diff % 3600) / 60 ))m"
+                fi
+                usage_segment="${C_GRAY}⚡ ${C_ACCENT}${utilization_pct}%${C_GRAY} 5hr (${reset_str})"
             else
-                reset_str="$(( diff / 3600 ))h $(( (diff % 3600) / 60 ))m"
+                usage_segment="${C_GRAY}⚡ ${C_ACCENT}${utilization_pct}%${C_GRAY} 5hr"
             fi
-            usage_segment="${C_GRAY}⚡ ${C_ACCENT}${utilization}%${C_GRAY} 5hr (${reset_str})"
-        else
-            usage_segment="${C_GRAY}⚡ ${C_ACCENT}${utilization}%${C_GRAY} 5hr"
         fi
     fi
 fi
