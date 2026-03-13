@@ -7,18 +7,23 @@ Manually set up the Claude Code status bar to display model, context usage, and 
 
 ### Steps
 
-**1. Copy the script**
+**1. Get the scripts**
 
-Copy `context-bar.sh` from this repo into `~/.claude/scripts/`:
+The status bar depends on multiple files (`context-bar.sh`, `fetch-usage.sh`, etc.), so you need all of them. The easiest options:
 
+**Option A — Clone directly into `~/.claude`:**
 ```bash
-cp context-bar.sh ~/.claude/scripts/context-bar.sh
+git clone https://github.com/YOUR_USERNAME/claude-global-scripts ~/.claude/scripts
 ```
 
-**2. Make it executable**
+**Option B — Download ZIP:**
+
+Download the ZIP from GitHub (Code → Download ZIP), then extract the contents into `~/.claude/scripts/`.
+
+**2. Make the scripts executable**
 
 ```bash
-chmod +x ~/.claude/scripts/context-bar.sh
+chmod +x ~/.claude/scripts/*.sh
 ```
 
 **3. Update `~/.claude/settings.json`**
