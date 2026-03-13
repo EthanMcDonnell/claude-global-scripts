@@ -48,3 +48,13 @@ Requires `jq` for JSON parsing:
 brew install jq       # macOS
 apt install jq        # Linux
 ```
+
+## Usage Pacing
+
+The status bar automatically shows your weekly pacing:
+- **Weekly usage**: Your current 7-day rolling usage
+- **Target per session**: How much to use per remaining 5-hour session to hit 100%
+
+Calculation: `(100% - weekly_usage) / sessions_remaining`
+
+Sessions remaining is estimated at 3 per day for the rest of the month.
