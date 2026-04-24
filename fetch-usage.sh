@@ -11,18 +11,12 @@ TOKEN_CACHE_FILE="${CACHE_DIR}/token.cache"
 TOKEN_CACHE_MAX_AGE=3600 # 1 hour
 
 # API configuration
-USAGE_API_HOST="api.anthropic.com"
-USAGE_API_PATH="/api/oauth/usage"
+USAGE_API_URL="https://api.anthropic.com/api/oauth/usage"
 USAGE_API_TIMEOUT=5
 
 # Ensure cache directory exists
 ensure_cache_dir() {
     mkdir -p "$CACHE_DIR" 2>/dev/null || true
-}
-
-# Get current timestamp
-now() {
-    date +%s
 }
 
 # Get file modification time
@@ -37,7 +31,7 @@ file_mtime() {
 
 # Get usage token from keychain (macOS) or credentials file
 get_usage_token() {
-    local now_ts=$(now)
+    local now_ts=$(date +%s)
 
     # Check token cache
     if [[ -f "$TOKEN_CACHE_FILE" ]]; then
@@ -47,7 +41,7 @@ get_usage_token() {
         fi
     fi
 
-    local token=""
+    local token
 
     if [[ "$OSTYPE" == "darwin"* ]]; then
         # macOS: read from keychain
@@ -72,7 +66,7 @@ get_usage_token() {
 
 # Read active lock file
 read_active_lock() {
-    local now_ts=$(now)
+    local now_ts=$(date +%s)
 
     [[ -f "$LOCK_FILE" ]] || return 1
 
@@ -89,17 +83,7 @@ read_active_lock() {
                 echo "$error:$blocked_until"
                 return 0
             fi
-            return 1
         fi
-    fi
-
-    # Fall back to mtime-based lock
-    local lock_mtime=$(file_mtime "$LOCK_FILE")
-    local blocked_until=$((lock_mtime + LOCK_MAX_AGE))
-
-    if [[ $blocked_until -gt $now_ts ]]; then
-        echo "timeout:$blocked_until"
-        return 0
     fi
 
     return 1
@@ -117,7 +101,6 @@ write_lock() {
 # Parse Retry-After header (supports both seconds and HTTP-date)
 parse_retry_after() {
     local retry_after="$1"
-    local now_ms=$(($(date +%s) * 1000))
 
     [[ -z "$retry_after" ]] && return 1
 
@@ -128,16 +111,16 @@ parse_retry_after() {
     fi
 
     # Try parsing as HTTP-date
-    local retry_at_ms
+    local retry_at
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        retry_at_ms=$(date -j -f "%a, %d %b %Y %H:%M:%S %Z" "$retry_after" +%s 2>/dev/null)
+        retry_at=$(date -j -f "%a, %d %b %Y %H:%M:%S %Z" "$retry_after" +%s 2>/dev/null)
     else
-        retry_at_ms=$(date -d "$retry_after" +%s 2>/dev/null)
+        retry_at=$(date -d "$retry_after" +%s 2>/dev/null)
     fi
 
-    [[ -n "$retry_at_ms" ]] || return 1
+    [[ -n "$retry_at" ]] || return 1
 
-    local retry_after_seconds=$(( (retry_at_ms - now_ms / 1000) ))
+    local retry_after_seconds=$(( retry_at - $(date +%s) ))
     [[ $retry_after_seconds -gt 0 ]] && echo "$retry_after_seconds" && return 0
 
     return 1
@@ -149,7 +132,6 @@ fetch_from_api() {
     local response_file=$(mktemp)
     local headers_file=$(mktemp)
 
-    # Make API call
     local http_code
     http_code=$(curl -s -m "$USAGE_API_TIMEOUT" \
         -H "Authorization: Bearer $token" \
@@ -157,9 +139,9 @@ fetch_from_api() {
         -w "%{http_code}" \
         -o "$response_file" \
         -D "$headers_file" \
-        "https://${USAGE_API_HOST}${USAGE_API_PATH}" 2>/dev/null)
+        "$USAGE_API_URL" 2>/dev/null)
 
-    local result=""
+    local result
 
     if [[ "$http_code" == "200" ]]; then
         local body
@@ -214,7 +196,7 @@ create_error_response() {
 
 # Main function to fetch usage data
 fetch_usage_data() {
-    local now_ts=$(now)
+    local now_ts=$(date +%s)
 
     # Check file cache first
     if [[ -f "$CACHE_FILE" ]]; then
@@ -226,15 +208,39 @@ fetch_usage_data() {
                 local has_error
                 has_error=$(echo "$cached_data" | jq -r '.error // empty' 2>/dev/null)
                 if [[ -z "$has_error" ]]; then
-                    echo "$cached_data"
-                    return 0
+                    # Skip cache if the session reset time has already passed
+                    local cached_reset_at
+                    cached_reset_at=$(echo "$cached_data" | jq -r '.sessionResetAt // empty' 2>/dev/null)
+                    if [[ -n "$cached_reset_at" ]]; then
+                        local reset_epoch
+                        if [[ "$OSTYPE" == "darwin"* ]]; then
+                            reset_epoch=$(date -ju -f "%Y-%m-%dT%H:%M:%S" "${cached_reset_at%%.*}" +%s 2>/dev/null)
+                        else
+                            reset_epoch=$(date -d "$cached_reset_at" +%s 2>/dev/null)
+                        fi
+                        if [[ -n "$reset_epoch" && $reset_epoch -le $now_ts ]]; then
+                            : # fall through to fetch fresh data
+                        else
+                            echo "$cached_data"
+                            return 0
+                        fi
+                    else
+                        echo "$cached_data"
+                        return 0
+                    fi
                 fi
             fi
         fi
     fi
 
-    # Get token
-    local token
+    # Get token (track if from cache for retry logic)
+    local token token_was_cached=false
+    if [[ -f "$TOKEN_CACHE_FILE" ]]; then
+        local token_age=$((now_ts - $(file_mtime "$TOKEN_CACHE_FILE")))
+        if [[ $token_age -lt $TOKEN_CACHE_MAX_AGE ]]; then
+            token_was_cached=true
+        fi
+    fi
     token=$(get_usage_token)
     if [[ -z "$token" ]]; then
         local stale
@@ -271,6 +277,24 @@ fetch_usage_data() {
 
     # Create lock
     write_lock $((now_ts + LOCK_MAX_AGE)) "timeout"
+
+    # Double-check cache: another instance may have populated it while we were waiting
+    if [[ -f "$CACHE_FILE" ]]; then
+        local recheck_age=$((now_ts - $(file_mtime "$CACHE_FILE")))
+        if [[ $recheck_age -lt $CACHE_MAX_AGE ]]; then
+            local recheck_data
+            recheck_data=$(cat "$CACHE_FILE" 2>/dev/null)
+            if [[ -n "$recheck_data" ]]; then
+                local recheck_error
+                recheck_error=$(echo "$recheck_data" | jq -r '.error // empty' 2>/dev/null)
+                if [[ -z "$recheck_error" ]]; then
+                    rm -f "$LOCK_FILE"
+                    echo "$recheck_data"
+                    return 0
+                fi
+            fi
+        fi
+    fi
 
     # Fetch from API
     local api_result
@@ -318,14 +342,38 @@ fetch_usage_data() {
                 return 1
             fi
 
-            # Save to cache
+            # Save to cache and release lock
             ensure_cache_dir
             echo "$usage_data" > "$CACHE_FILE" 2>/dev/null
+            rm -f "$LOCK_FILE"
 
             echo "$usage_data"
             return 0
             ;;
         rate-limited)
+            # If token came from cache, it may be stale — retry once with a fresh token
+            if [[ "$token_was_cached" == "true" ]]; then
+                rm -f "$TOKEN_CACHE_FILE"
+                local fresh_token
+                fresh_token=$(get_usage_token)
+                if [[ -n "$fresh_token" && "$fresh_token" != "$token" ]]; then
+                    api_result=$(fetch_from_api "$fresh_token")
+                    result_type="${api_result%%:*}"
+                    result_value="${api_result#*:}"
+                    if [[ "$result_type" == "success" ]]; then
+                        local usage_data
+                        usage_data=$(parse_api_response "$result_value")
+                        if [[ -n "$usage_data" ]]; then
+                            ensure_cache_dir
+                            echo "$usage_data" > "$CACHE_FILE" 2>/dev/null
+                            rm -f "$LOCK_FILE"
+                            echo "$usage_data"
+                            return 0
+                        fi
+                    fi
+                    # If still rate-limited or error, fall through to write lock with new result_value
+                fi
+            fi
             write_lock $((now_ts + result_value)) "rate-limited"
             local stale
             stale=$(read_stale_cache)
