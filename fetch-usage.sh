@@ -214,7 +214,9 @@ fetch_usage_data() {
                     if [[ -n "$cached_reset_at" ]]; then
                         local reset_epoch
                         if [[ "$OSTYPE" == "darwin"* ]]; then
-                            reset_epoch=$(date -ju -f "%Y-%m-%dT%H:%M:%S" "${cached_reset_at%%.*}" +%s 2>/dev/null)
+                            local _clean_ts="${cached_reset_at%%.*}"
+                            _clean_ts="${_clean_ts%Z}"
+                            reset_epoch=$(date -ju -f "%Y-%m-%dT%H:%M:%S" "$_clean_ts" +%s 2>/dev/null)
                         else
                             reset_epoch=$(date -d "$cached_reset_at" +%s 2>/dev/null)
                         fi
@@ -288,9 +290,26 @@ fetch_usage_data() {
                 local recheck_error
                 recheck_error=$(echo "$recheck_data" | jq -r '.error // empty' 2>/dev/null)
                 if [[ -z "$recheck_error" ]]; then
-                    rm -f "$LOCK_FILE"
-                    echo "$recheck_data"
-                    return 0
+                    # Must also verify the session reset time hasn't passed — same check as above.
+                    # Without this, the double-check would re-serve stale data on every invocation
+                    # within CACHE_MAX_AGE of the last write, blocking the API call indefinitely.
+                    local recheck_reset_at recheck_reset_epoch _recheck_valid=true
+                    recheck_reset_at=$(echo "$recheck_data" | jq -r '.sessionResetAt // empty' 2>/dev/null)
+                    if [[ -n "$recheck_reset_at" ]]; then
+                        if [[ "$OSTYPE" == "darwin"* ]]; then
+                            local _rc_ts="${recheck_reset_at%%.*}"
+                            _rc_ts="${_rc_ts%Z}"
+                            recheck_reset_epoch=$(date -ju -f "%Y-%m-%dT%H:%M:%S" "$_rc_ts" +%s 2>/dev/null)
+                        else
+                            recheck_reset_epoch=$(date -d "$recheck_reset_at" +%s 2>/dev/null)
+                        fi
+                        [[ -n "$recheck_reset_epoch" && $recheck_reset_epoch -le $now_ts ]] && _recheck_valid=false
+                    fi
+                    if [[ "$_recheck_valid" == "true" ]]; then
+                        rm -f "$LOCK_FILE"
+                        echo "$recheck_data"
+                        return 0
+                    fi
                 fi
             fi
         fi
@@ -374,6 +393,7 @@ fetch_usage_data() {
                     # If still rate-limited or error, fall through to write lock with new result_value
                 fi
             fi
+            [[ "$result_value" =~ ^[0-9]+$ ]] || result_value=$DEFAULT_RATE_LIMIT_BACKOFF
             write_lock $((now_ts + result_value)) "rate-limited"
             local stale
             stale=$(read_stale_cache)
