@@ -98,7 +98,7 @@ if [[ -n "$usage_data" ]]; then
         resets_at=$(echo "$usage_data" | jq -r '.sessionResetAt // empty' 2>/dev/null)
         weekly_resets_at=$(echo "$usage_data" | jq -r '.weeklyResetAt // empty' 2>/dev/null)
 
-        if [[ -n "$utilization" && -n "$resets_at" ]]; then
+        if [[ -n "$utilization" ]]; then
             # API returns utilization as percentage already (e.g., 61)
             utilization_pct=$(echo "$utilization" | awk '{printf "%.0f", $1}')
 
