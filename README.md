@@ -1,5 +1,5 @@
-# claude-global-scripts
-Scripts for `~/.claude/scripts`
+# claude-usage-bar
+A Claude Code status bar showing model, context usage, cost, and weekly pacing at a glance.
 
 ## Status Bar Setup
 
@@ -13,17 +13,17 @@ The status bar depends on multiple files (`context-bar.sh`, `fetch-usage.sh`, et
 
 **Option A — Clone directly into `~/.claude`:**
 ```bash
-git clone https://github.com/YOUR_USERNAME/claude-global-scripts ~/.claude/scripts
+git clone https://github.com/YOUR_USERNAME/claude-usage-bar ~/.claude/claude-usage-bar
 ```
 
 **Option B — Download ZIP:**
 
-Download the ZIP from GitHub (Code → Download ZIP), then extract the contents into `~/.claude/scripts/`.
+Download the ZIP from GitHub (Code → Download ZIP), then extract the contents into `~/.claude/claude-usage-bar/`.
 
 **2. Make the scripts executable**
 
 ```bash
-chmod +x ~/.claude/scripts/*.sh
+chmod +x ~/.claude/claude-usage-bar/*.sh
 ```
 
 **3. Update `~/.claude/settings.json`**
@@ -34,7 +34,7 @@ Add the following to your `~/.claude/settings.json`:
 {
   "statusLine": {
     "type": "command",
-    "command": "~/.claude/scripts/context-bar.sh"
+    "command": "~/.claude/claude-usage-bar/context-bar.sh"
   }
 }
 ```
